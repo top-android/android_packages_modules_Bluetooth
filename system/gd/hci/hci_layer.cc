@@ -280,10 +280,41 @@ struct HciLayer::impl {
                        "assert failed: command_complete_view.IsValid()");
       (*command_queue_.front().GetCallback<CommandCompleteView>())(command_complete_view);
     } else if (waiting_for != WaitingFor::STATUS_OR_COMPLETE) {
-      log::assert_that((waiting_for == WaitingFor::STATUS) == is_status,
-                       "{} was not expecting {} event", OpCodeText(op_code), logging_id);
+      // cannon A15 老 vendor 适配：控制器对"本应回 Command Complete"的命令回了 Command Status
+      // （MTK 对 HCI_Sniff_Subrating 0x0811 回 UNSUPPORTED_REMOTE_OR_LMP_FEATURE 即此）。
+      // 若照下面 assert_that 走会 LOG_ALWAYS_FATAL abort bluetooth（静默进 sniff 即掉线重连）。
+      // 移植 A14 修法到 A15 结构：造一个**合法**的 error Command Complete（真实 opcode + 真实
+      // 状态）交给 COMPLETE 回调，让 legacy 层走正常失败分支，而非进程 abort。
+      if (is_status && waiting_for == WaitingFor::COMPLETE) {
+        // PDL view 的 was_validated_ 必须显式调用 IsValid() 才置位；A17 生成代码里
+        // 直接 GetStatus() 会 assert 并 abort（hci_packets.h:3037 GetStatus: was_validated_），
+        // 表现为蓝牙静默掉线/重连。这里先校验，再降级到 UNSPECIFIED_ERROR。
+        uint8_t status_byte = 0x1f;  // UNSPECIFIED_ERROR：取不到真实状态时的降级值
+        uint8_t num_packets = 1;
+        if (status_view.IsValid()) {
+          status_byte = static_cast<uint8_t>(status_view.GetStatus());
+          num_packets = status_view.GetNumHciCommandPackets();
+        } else {
+          log::warn("cannon: invalid CommandStatus for {}, fallback UNSPECIFIED_ERROR",
+                    OpCodeText(op_code));
+        }
+        auto payload = std::make_unique<packet::RawBuilder>();
+        payload->AddOctets1(status_byte);
+        auto complete_event_builder = CommandCompleteBuilder::Create(
+                num_packets, op_code, std::move(payload));
+        auto complete = std::make_shared<std::vector<std::uint8_t>>(
+                complete_event_builder->SerializeToBytes());
+        CommandCompleteView command_complete_view = CommandCompleteView::Create(
+                EventView::Create(PacketView<kLittleEndian>(complete)));
+        log::assert_that(command_complete_view.IsValid(),
+                         "assert failed: command_complete_view.IsValid()");
+        (*command_queue_.front().GetCallback<CommandCompleteView>())(command_complete_view);
+      } else {
+        log::assert_that((waiting_for == WaitingFor::STATUS) == is_status,
+                         "{} was not expecting {} event", OpCodeText(op_code), logging_id);
 
-      (*command_queue_.front().GetCallback<TResponse>())(std::move(response_view));
+        (*command_queue_.front().GetCallback<TResponse>())(std::move(response_view));
+      }
     } else {
       (*command_queue_.front().GetCallback<CommandStatusOrCompleteView>())(
               std::move(response_view));

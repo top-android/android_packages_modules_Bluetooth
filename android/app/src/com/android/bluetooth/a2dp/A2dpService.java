@@ -489,6 +489,11 @@ public class A2dpService extends ConnectableProfile {
                                     + "): current is "
                                     + mActiveDevice
                                     + " no changed");
+                    // cannon: 重新通知 AudioManager，让音频策略(重)注册 A2DP 输出设备。
+                    // 部分 vendor 栈会丢掉首次激活通知，导致 A2DP 设备在音频策略里未注册（声音留在扬声器）。
+                    // previous==null 使框架视为"设备变为活动"(幂等)。
+                    mAudioManager.handleBluetoothActiveDeviceChanged(device, null,
+                            BluetoothProfileConnectionInfo.createA2dpInfo(true, -1));
                     // returns true since the device is activated even double attempted
                     return true;
                 }

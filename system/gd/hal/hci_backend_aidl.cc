@@ -40,7 +40,13 @@ public:
 
   using AidlStatus = ::aidl::android::hardware::bluetooth::Status;
   ::ndk::ScopedAStatus initializationComplete(AidlStatus status) override {
-    log::assert_that(status == AidlStatus::SUCCESS, "status == AidlStatus::SUCCESS");
+    // [cannon] MTK 原厂 HAL 在 A17 上会返回非 SUCCESS 的 vendor 状态。原逻辑直接
+    // assert abort，导致 bluetooth 反复重启（表现为耳机连上后断联）。
+    // 降级为错误日志并继续回调，让上层走失败分支，不再杀掉整个进程。
+    if (status != AidlStatus::SUCCESS) {
+      log::error("cannon: AIDL HCI initializationComplete status={} (expected SUCCESS), continue",
+                 static_cast<int>(status));
+    }
     callbacks_->initializationComplete();
     return ::ndk::ScopedAStatus::ok();
   }
